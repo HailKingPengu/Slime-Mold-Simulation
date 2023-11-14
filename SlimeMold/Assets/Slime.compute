@@ -1,0 +1,162 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel Fade
+#pragma kernel Blur
+#pragma kernel Update
+
+
+struct Agent {
+    float2 position;
+    float angle;
+};
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWStructuredBuffer<Agent> agents;
+RWTexture2D<float4> Result;
+uint width;
+uint height;
+float moveSpeed;
+int numAgents = 0;
+float deltaTime;
+float2 newpos;
+float fadeAmount;
+float blueShift;
+
+int blurSize;
+float blurSpeed;
+
+float sensorAngleSpacing;
+float sensorOffsetDistance;
+int sensorSize;
+float turnSpeed;
+
+float4 agentColour;
+
+
+//i stole this
+uint hash(uint state) {
+    state ^= 2747636419u;
+    state *= 2654435769u;
+    state ^= state >> 16;
+    state *= 2654435769u;
+    state ^= state >> 16;
+    state *= 2654435769u;
+    return state;
+}
+
+float sense(Agent agent, float sensorAngleOffset) {
+    float sensorAngle = agent.angle + sensorAngleOffset;
+    float2 sensorDir = float2(cos(sensorAngle), sin(sensorAngle));
+    int2 sensorCentre = agent.position + sensorDir * sensorOffsetDistance;
+    float sum = 0;
+
+
+    for (int offsetX = -sensorSize; offsetX <= sensorSize; offsetX++) {
+        for (int offsetY = -sensorSize; offsetY <= sensorSize; offsetY++) {
+            int2 pos = sensorCentre + int2(offsetX, offsetY);
+
+            if (pos.x >= 0 && pos.x < width && pos.y >= 0 && pos.y < height) {
+                sum += Result[pos].z;
+            }
+        }
+    }
+
+    return sum;
+}
+
+[numthreads(8,8,1)]
+void Fade (uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+
+    if (id.x < 0 || id.x >= width || id.y < 0 || id.y >= height) { return;  }
+
+    //int pixelIndex = id.y * width + id.x;
+    //uint pseudoRandomNumber = hash(pixelIndex);
+
+    float4 newValue = max(0, Result[id.xy] - fadeAmount * deltaTime);
+
+    float shiftAmount = newValue.x + newValue.y;
+    float4 shiftedValue = float4(newValue.x - (blueShift * newValue.x), newValue.y - (blueShift * newValue.y), min(newValue.z + (blueShift * (newValue.x + newValue.y)), 1), newValue.w);
+
+    //Result[id.xy] = pseudoRandomNumber / 4294967295.0;
+    Result[id.xy] = shiftedValue;
+}
+
+[numthreads(8, 8, 1)]
+void Blur(uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+
+    if (id.x < 0 || id.x >= width || id.y < 0 || id.y >= height) { return; }
+
+    float4 originalValue = Result[id.xy];
+
+    float4 sum = 0;
+    int totalSamples = 0;
+
+    for (int offsetX = -blurSize; offsetX <= blurSize; offsetX++) {
+        for (int offsetY = -blurSize; offsetY <= blurSize; offsetY++) {
+            int sampleX = id.x + offsetX;
+            int sampleY = id.y + offsetY;
+
+            if (sampleX >= 0 && sampleX < width && sampleY >= 0 && sampleY < height) {
+                sum += Result[int2(sampleX, sampleY)];
+                totalSamples++;
+            }
+        }
+    }
+
+    float4 blurResult = sum / totalSamples;
+
+    int pixelIndex = id.y * width + id.x;
+    uint pseudoRandomNumber = hash(pixelIndex);
+    //Result[id.xy] = pseudoRandomNumber / 4294967295.0;
+
+    Result[id.xy] = lerp(originalValue, blurResult, blurSpeed * deltaTime);
+
+    //Result[id.xy] = (Result[id.xy - 1] + Result[id.xy] + Result[id.xy + 1]) / 3;
+}
+
+[numthreads(256, 1, 1)]
+void Update(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numAgents) { return; }
+
+    Agent agent = agents[id.x];
+    uint random = hash(agent.position.y * width + agent.position.x + hash(id.x));
+
+
+    float weightForward = sense(agent, 0);
+    float weightLeft = sense(agent, sensorAngleSpacing);
+    float weightRight = sense(agent, -sensorAngleSpacing);
+
+    float randomSteerStrength = random / 4294967295.0;
+
+    if (weightForward > weightLeft && weightForward > weightRight) {
+        agents[id.x].angle += 0;
+    }
+    //else if (weightForward < weightLeft && weightForward < weightRight) {
+    //    agents[id.x].angle += (randomSteerStrength - 0.5) * 2 * turnSpeed * deltaTime;
+    //}
+    else if (weightRight > weightLeft) {
+        agents[id.x].angle -= randomSteerStrength * turnSpeed * deltaTime;
+    }
+    else if (weightLeft > weightRight) {
+        agents[id.x].angle += randomSteerStrength * turnSpeed * deltaTime;
+    }
+
+
+    float2 direction = float2(cos(agent.angle), sin(agent.angle));
+    float2 newPos = agent.position + direction * moveSpeed * deltaTime;
+
+    if (newPos.x < 0 || newPos.x >= width || newPos.y < 0 || newPos.y >= height) {
+        newpos.x = min(width - 0.01, max(0, newPos.x));
+        newpos.y = min(height - 0.01, max(0, newPos.y));
+        agents[id.x].angle = (random/ 4294967295.0) * 2 * 3.14;
+    }
+
+    agents[id.x].position = newPos;
+    Result[int2(newPos.x, newPos.y)] = agentColour;
+
+}
